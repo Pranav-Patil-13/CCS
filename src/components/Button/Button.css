@@ -1,0 +1,24 @@
+.btn-danger {
+  background: #fee2e2;
+  border-color: #fecaca;
+  color: #dc2626;
+  box-shadow: none;
+}
+
+.btn-danger:hover {
+  background: #fecaca;
+  border-color: #fca5a5;
+  color: #b91c1c;
+}
+
+.btn-lg {
+  font-size: 1rem;
+  min-height: 52px;
+  padding: 14px 24px;
+}
+
+.btn-sm {
+  font-size: 0.8rem;
+  min-height: 34px;
+  padding: 6px 14px;
+}

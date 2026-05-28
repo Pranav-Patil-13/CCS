@@ -1,0 +1,342 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Document ID: Firebase Auth UID
+    // Fields:
+    //   - uid: string (required) - matching auth UID
+    //   - email: string (required) - email address of the user
+    //   - role: string (required) - either 'company' or 'employee'
+    //   - firstName: string (required) - first name of the user
+    //   - lastName: string (required) - last name of the user
+    //   - name: string (required) - full name
+    //   - initials: string (required) - initials
+    //   - createdAt: timestamp (required) - creation date
+    //
+    // Collection: employees
+    // Document ID: Auto-generated ID
+    // Fields:
+    //   - companyId: string (required) - company user UID who added this employee
+    //   - name: string (required) - employee name
+    //   - role: string (required) - job title
+    //   - department: string (required) - department name
+    //   - status: string (required) - 'Pending' or 'Verified'
+    //   - date: string (required) - text date (e.g. 'Oct 24, 2026')
+    //   - email: string (required) - employee's work email
+    //   - score: number (required) - professional score
+    //   - risk: string (required) - risk status (e.g. 'Low')
+    //   - createdAt: timestamp (required) - creation date
+    //
+    // Collection: requests
+    // Document ID: Auto-generated ID
+    // Fields:
+    //   - requesterUid: string (required) - employee user UID who made request
+    //   - name: string (required) - requester name
+    //   - company: string (required) - company name
+    //   - role: string (required) - job title
+    //   - hrEmail: string (required) - target HR email address
+    //   - status: string (required) - 'Pending' or 'Verified'
+    //   - date: string (required) - text date
+    //   - stage: string (required) - current step (e.g. 'Manager review')
+    //   - priority: string (required) - 'High' or 'Normal'
+    //   - createdAt: timestamp (required) - creation date
+    //
+    // Collection: evaluations
+    // Document ID: Auto-generated ID
+    // Fields:
+    //   - requestId: string (optional) - associated request ID
+    //   - employeeName: string (required) - employee name
+    //   - employeeEmail: string (required) - employee email
+    //   - companyId: string (required) - company user UID submitting evaluation
+    //   - overallScore: number (required) - overall score (0 to 10)
+    //   - technicalSkills: number (required) - sub-score
+    //   - delivery: number (required) - sub-score
+    //   - collaboration: number (required) - sub-score
+    //   - integrity: number (required) - sub-score
+    //   - reasonForExit: string (required) - explanation
+    //   - reviewNotes: string (required) - detailed notes
+    //   - tags: list of strings (required) - tags (max size 5)
+    //   - createdAt: timestamp (required) - creation date
+    //
+    // Collection: shareLinks
+    // Document ID: Auto-generated ID
+    // Fields:
+    //   - employeeId: string (required) - employee user UID who created the link
+    //   - recipient: string (required) - target reviewer
+    //   - access: string (required) - 'Full profile' or 'Employment only'
+    //   - status: string (required) - 'Active' or 'Expired'
+    //   - expires: string (required) - expiry description or date
+    //   - views: number (required) - view counter
+    //   - createdAt: timestamp (required) - creation date
+    //
+    // Collection: candidateProfiles
+    // Document ID: Auto-generated ID
+    // Fields:
+    //   - companyId: string (required) - company user UID accessing the profile
+    //   - name: string (required) - candidate name
+    //   - role: string (required) - candidate job title
+    //   - score: number (required) - candidate score
+    //   - status: string (required) - 'Access granted' or 'Requested'
+    //   - expires: string (required) - access expiry date description
+    //   - flags: string (required) - background flags/status
+    //   - createdAt: timestamp (required) - creation date
+    //
+    // Collection: activity
+    // Document ID: Auto-generated ID
+    // Fields:
+    //   - userId: string (required) - user UID who should see this activity
+    //   - type: string (required) - 'request', 'share', 'evaluation', or 'employee'
+    //   - title: string (required) - description of activity
+    //   - time: string (required) - relative time display string
+    //   - createdAt: timestamp (required) - creation date
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    function isRecent(time) {
+      return time is timestamp && time > request.time - duration.value(5, 'm') && time <= request.time;
+    }
+
+    function areImmutableFieldsUnchanged(fields) {
+      return !request.resource.data.diff(resource.data).affectedKeys().hasAny(fields);
+    }
+
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function getUserCompanyId() {
+      return getUserData().get('companyId', request.auth.uid);
+    }
+
+    function isCompanyMember(companyId) {
+      return isAuthenticated() && getUserCompanyId() == companyId;
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidUser(data) {
+      return hasRequiredFields(['uid', 'email', 'role', 'firstName', 'lastName', 'name', 'initials', 'createdAt']) &&
+             hasOnlyAllowedFields(['uid', 'email', 'role', 'firstName', 'lastName', 'name', 'initials', 'createdAt', 'photoUrl', 'linkedInId', 'globalId', 'companyId', 'companyName', 'companyRole']) &&
+             data.email is string && data.email.size() > 0 &&
+             data.role in ['company', 'employee'] &&
+             data.firstName is string && data.firstName.size() > 0 && data.firstName.size() <= 50 &&
+             data.lastName is string && data.lastName.size() <= 50 &&
+             data.name is string && data.name.size() > 0 && data.name.size() <= 101 &&
+             data.initials is string && data.initials.size() > 0 && data.initials.size() <= 4 &&
+             data.createdAt is timestamp &&
+             (!('photoUrl' in data) || data.photoUrl == null || data.photoUrl is string) &&
+             (!('linkedInId' in data) || data.linkedInId is string) &&
+             (!('globalId' in data) || data.globalId is string) &&
+             (!('companyId' in data) || data.companyId is string) &&
+             (!('companyName' in data) || data.companyName is string) &&
+             (!('companyRole' in data) || data.companyRole in ['owner', 'hr']);
+    }
+
+    function isValidEmployee(data) {
+      return hasRequiredFields(['companyId', 'name', 'role', 'department', 'status', 'date', 'email', 'score', 'risk', 'createdAt']) &&
+             hasOnlyAllowedFields(['companyId', 'name', 'role', 'department', 'status', 'date', 'email', 'score', 'risk', 'createdAt', 'referenceLetterUrl', 'referenceLetterName', 'verifiedBy', 'verifierEmail', 'verificationMethod', 'verifiedAt']) &&
+             data.companyId == getUserCompanyId() &&
+             data.name is string && data.name.size() > 0 && data.name.size() <= 100 &&
+             data.role is string && data.role.size() > 0 && data.role.size() <= 100 &&
+             data.department is string && data.department.size() > 0 && data.department.size() <= 100 &&
+             data.status in ['Pending', 'Verified'] &&
+             data.date is string && data.date.size() > 0 && data.date.size() <= 50 &&
+             isValidEmail(data.email) &&
+             data.score is number && data.score >= 0 && data.score <= 10 &&
+             data.risk is string && data.risk.size() > 0 && data.risk.size() <= 50 &&
+             (!('referenceLetterUrl' in data) || data.referenceLetterUrl is string) &&
+             (!('referenceLetterName' in data) || data.referenceLetterName is string) &&
+             (!('verifiedBy' in data) || data.verifiedBy is string) &&
+             (!('verifierEmail' in data) || data.verifierEmail is string) &&
+             (!('verificationMethod' in data) || data.verificationMethod is string) &&
+             (!('verifiedAt' in data) || data.verifiedAt is string) &&
+             data.createdAt is timestamp;
+    }
+
+    function isValidManualEmployee(data) {
+      return hasRequiredFields(['companyId', 'name', 'role', 'department', 'status', 'date', 'email', 'score', 'risk', 'createdAt']) &&
+             hasOnlyAllowedFields(['companyId', 'name', 'role', 'department', 'status', 'date', 'email', 'score', 'risk', 'createdAt', 'company', 'tags', 'summary']) &&
+             data.companyId == 'manual_entry' &&
+             data.status == 'Unverified' &&
+             data.email.lower() == request.auth.token.email.lower() &&
+             data.name is string && data.name.size() > 0 && data.name.size() <= 100 &&
+             data.role is string && data.role.size() > 0 && data.role.size() <= 100 &&
+             data.company is string && data.company.size() > 0 && data.company.size() <= 100 &&
+             data.department is string && data.department.size() > 0 && data.department.size() <= 100 &&
+             data.date is string && data.date.size() > 0 && data.date.size() <= 50 &&
+             data.score == 0 &&
+             data.risk == 'Unverified' &&
+             data.tags is list && data.tags.size() > 0 && data.tags[0] == 'Self-Declared' &&
+             data.createdAt is timestamp;
+    }
+
+    function isValidRequest(data) {
+      return hasRequiredFields(['requesterUid', 'name', 'company', 'role', 'hrEmail', 'hrEmailDomain', 'status', 'date', 'stage', 'priority', 'createdAt']) &&
+             (!('requesterEmail' in data) || (data.requesterEmail is string && data.requesterEmail.size() > 0)) &&
+             data.name is string && data.name.size() > 0 && data.name.size() <= 100 &&
+             data.company is string && data.company.size() > 0 && data.company.size() <= 100 &&
+             data.role is string && data.role.size() > 0 && data.role.size() <= 100 &&
+             isValidEmail(data.hrEmail) &&
+             data.hrEmailDomain is string && data.hrEmailDomain.size() > 0 &&
+             data.status in ['Pending', 'Verified'] &&
+             data.date is string && data.date.size() > 0 && data.date.size() <= 50 &&
+             data.stage is string && data.stage.size() > 0 && data.stage.size() <= 50 &&
+             data.priority in ['High', 'Normal'] &&
+             (!('approvedBy' in data) || (
+               data.approvedBy is map &&
+               data.approvedBy.uid is string &&
+               data.approvedBy.name is string &&
+               data.approvedBy.email is string
+             )) &&
+             (!('appealCount' in data) || (data.appealCount is number && data.appealCount >= 0 && data.appealCount <= 3)) &&
+             (!('isAppeal' in data) || data.isAppeal is bool) &&
+             (!('lastEvaluatedAt' in data) || data.lastEvaluatedAt is timestamp) &&
+             (!('appealReason' in data) || data.appealReason is string) &&
+             data.createdAt is timestamp;
+    }
+
+    function isValidEvaluation(data) {
+      return hasRequiredFields(['employeeName', 'companyId', 'overallScore', 'createdAt']) &&
+             data.companyId == getUserCompanyId() &&
+             data.employeeName is string && data.employeeName.size() > 0 && data.employeeName.size() <= 100 &&
+             (data.overallScore is number || data.overallScore is string) &&
+             data.createdAt is timestamp;
+    }
+
+    function isValidShareLink(data) {
+      return hasRequiredFields(['employeeId', 'recipient', 'access', 'status', 'expires', 'views', 'createdAt']) &&
+             hasOnlyAllowedFields(['employeeId', 'recipient', 'access', 'status', 'expires', 'views', 'createdAt', 'isDirectShared', 'targetCompanyId']) &&
+             data.employeeId == request.auth.uid &&
+             data.recipient is string && data.recipient.size() > 0 && data.recipient.size() <= 100 &&
+             data.access in ['Full profile', 'Employment only', 'Score summary only'] &&
+             data.status in ['Active', 'Expired'] &&
+             data.expires is string && data.expires.size() > 0 && data.expires.size() <= 50 &&
+             data.views is number && data.views >= 0 &&
+             data.createdAt is timestamp;
+    }
+
+    function isValidCandidateProfile(data) {
+      return hasRequiredFields(['companyId', 'name', 'role', 'score', 'status', 'expires', 'flags', 'createdAt']) &&
+             hasOnlyAllowedFields(['companyId', 'name', 'role', 'score', 'status', 'expires', 'flags', 'createdAt', 'shareLinkId']) &&
+             data.companyId == getUserCompanyId() &&
+             data.name is string && data.name.size() > 0 && data.name.size() <= 100 &&
+             data.role is string && data.role.size() > 0 && data.role.size() <= 100 &&
+             data.score is number && data.score >= 0 && data.score <= 10 &&
+             data.status in ['Access granted', 'Requested'] &&
+             data.expires is string && data.expires.size() > 0 && data.expires.size() <= 50 &&
+             data.flags is string && data.flags.size() <= 200 &&
+             (!('shareLinkId' in data) || data.shareLinkId is string) &&
+             data.createdAt is timestamp;
+    }
+
+    function isValidActivity(data) {
+      return hasRequiredFields(['userId', 'type', 'title', 'time', 'createdAt']) &&
+             hasOnlyAllowedFields(['userId', 'type', 'title', 'time', 'createdAt']) &&
+             data.userId == request.auth.uid &&
+             data.type in ['request', 'share', 'evaluation', 'employee'] &&
+             data.title is string && data.title.size() > 0 && data.title.size() <= 200 &&
+             data.time is string && data.time.size() > 0 && data.time.size() <= 50 &&
+             data.createdAt is timestamp;
+    }
+
+    // ===============================================================
+    // Rules Matching Paths
+    // ===============================================================
+
+    match /companies/{companyId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && request.resource.data.ownerUid == request.auth.uid;
+    }
+
+    match /users/{userId} {
+      allow read: if isOwner(userId) || !isAuthenticated() || (isAuthenticated() && resource.data.companyId == getUserCompanyId()) || (isAuthenticated() && resource.data.role == 'employee');
+      allow create: if ((isOwner(userId) && request.resource.data.uid == request.auth.uid) || (isAuthenticated() && getUserData().companyRole == 'owner' && request.resource.data.companyId == getUserCompanyId() && request.resource.data.uid == userId)) && isValidUser(request.resource.data);
+      allow update: if isOwner(userId) && request.resource.data.uid == request.auth.uid && areImmutableFieldsUnchanged(['role', 'uid', 'createdAt']) && isValidUser(request.resource.data);
+    }
+
+    match /employees/{employeeId} {
+      allow read: if (isAuthenticated() && (resource.data.companyId == getUserCompanyId() || resource.data.email.lower() == request.auth.token.email.lower() || resource.data.email == request.auth.token.email)) || resource.data.status == 'Verified';
+      allow create: if isAuthenticated() && (
+        (request.resource.data.companyId == getUserCompanyId() && isValidEmployee(request.resource.data)) ||
+        (getUserData().role == 'employee' && isValidManualEmployee(request.resource.data))
+      );
+      allow update: if isAuthenticated() && resource.data.companyId == getUserCompanyId() && areImmutableFieldsUnchanged(['companyId', 'createdAt']) && isValidEmployee(request.resource.data);
+    }
+
+    match /requests/{requestId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && request.resource.data.requesterUid == request.auth.uid && isValidRequest(request.resource.data);
+      allow update: if isAuthenticated() && areImmutableFieldsUnchanged(['requesterUid', 'createdAt']) && isValidRequest(request.resource.data);
+    }
+
+    match /evaluations/{evaluationId} {
+      allow read: if true;
+      allow create: if isAuthenticated() && request.resource.data.companyId == getUserCompanyId() && isValidEvaluation(request.resource.data);
+      allow update: if isAuthenticated() && resource.data.companyId == getUserCompanyId() && areImmutableFieldsUnchanged(['companyId', 'createdAt']) && isValidEvaluation(request.resource.data);
+    }
+
+    match /shareLinks/{shareLinkId} {
+      allow read: if (isAuthenticated() && resource.data.employeeId == request.auth.uid)
+                 || (resource.data.status == 'Active' && !resource.data.isDirectShared)
+                 || (isAuthenticated() && resource.data.status == 'Active' && resource.data.isDirectShared && resource.data.targetCompanyId == getUserCompanyId());
+      allow create: if isAuthenticated() && isValidShareLink(request.resource.data);
+      allow update: if (isAuthenticated() && resource.data.employeeId == request.auth.uid && areImmutableFieldsUnchanged(['employeeId', 'createdAt']) && isValidShareLink(request.resource.data))
+                 || (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['views']) && request.resource.data.views == resource.data.views + 1 && (!resource.data.isDirectShared || (isAuthenticated() && resource.data.targetCompanyId == getUserCompanyId())));
+      allow delete: if isAuthenticated() && resource.data.employeeId == request.auth.uid;
+    }
+
+    match /globalLinks/{globalId} {
+      allow read: if true;
+      allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
+      allow write: if isAuthenticated() && resource.data.userId == request.auth.uid;
+    }
+
+    match /candidateProfiles/{candId} {
+      allow read: if isAuthenticated() && (resource.data.companyId == getUserCompanyId() || ('shareLinkId' in resource.data && get(/databases/$(database)/documents/shareLinks/$(resource.data.shareLinkId)).data.employeeId == request.auth.uid));
+      allow create: if isAuthenticated() && (
+        (request.resource.data.companyId == getUserCompanyId() && isValidCandidateProfile(request.resource.data)) ||
+        ('shareLinkId' in request.resource.data &&
+         get(/databases/$(database)/documents/shareLinks/$(request.resource.data.shareLinkId)).data.employeeId == request.auth.uid &&
+         hasRequiredFields(['companyId', 'name', 'role', 'score', 'status', 'expires', 'flags', 'createdAt']) &&
+         hasOnlyAllowedFields(['companyId', 'name', 'role', 'score', 'status', 'expires', 'flags', 'createdAt', 'shareLinkId']))
+      );
+      allow update: if isAuthenticated() && resource.data.companyId == getUserCompanyId() && areImmutableFieldsUnchanged(['companyId', 'createdAt']) && isValidCandidateProfile(request.resource.data);
+      allow delete: if isAuthenticated() && (resource.data.companyId == getUserCompanyId() || ('shareLinkId' in resource.data && get(/databases/$(database)/documents/shareLinks/$(resource.data.shareLinkId)).data.employeeId == request.auth.uid));
+    }
+
+    match /activity/{activityId} {
+      allow read: if isAuthenticated() && (resource.data.userId == request.auth.uid);
+      allow create: if isAuthenticated() && isValidActivity(request.resource.data);
+      allow update: if isAuthenticated() && resource.data.userId == request.auth.uid && areImmutableFieldsUnchanged(['userId', 'createdAt']) && isValidActivity(request.resource.data);
+    }
+  }
+}

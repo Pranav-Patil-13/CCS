@@ -438,6 +438,10 @@
   flex: 1;
   overflow-y: auto;
   background: var(--color-surface);
+  border-radius: 28px 0px 0px 0px;
+  border: 1px solid #d7d7d7;
+  box-shadow: inset 12px 12px 20px #cdd0d2,
+            inset -12px -12px 20px #ffffff;
 }
 
 @media print {
